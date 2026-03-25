@@ -1,244 +1,378 @@
+%Shared is a class used to organize the shared parameters (its properties)
+%and the functions (its methods) for the HGR model.
+% Recommended to change only the doPostprocessing flag.
+
+%{
+Laboratorio de Inteligencia y Visión Artificial
+ESCUELA POLITÉCNICA NACIONAL
+Quito - Ecuador
+
+laboratorio.ia@epn.edu.ec
+
+"I find that I don't understand things unless I try to program them."
+-Donald E. Knuth
+
+Matlab 9.11.0.2022996 (R2021b) Update 4.
+%}
+
 classdef Shared
-    % Shared contains properties and methods shared between the models.
-    
-    %{
-    Laboratorio de Inteligencia y Visión Artificial
-    ESCUELA POLITÉCNICA NACIONAL
-    Quito - Ecuador
-    
-    laboratorio.ia@epn.edu.ec
-    
-    "I find that I don't understand things unless I try to program them."
-    -Donald E. Knuth
-    
-    Matlab 9.11.0.2022996 (R2021b) Update 4.
-    %}
-    
+
     properties (Constant)
+        % #################################################################
+        % ######### Recommended configurations to change ##################
+        % #################################################################
+
+        % ############# Post-Processing ###################################
+        % ``postprocessing``: Change this flag to either true or false
+        %doPostprocessing = false;
+        doPostprocessing = true;
         
-        %% DATASET DATA
-        % Path where the dataset is located
-        % DATA_DIR = 'C:\Users\ricar\Documents\MATLAB\Versionamiento\EMG-EPN-612 dataset';
         
-        % The amount of gestures in the dataset
-        NUM_GESTURES = 6;
-        % The amount of samples per user
-        NUM_SAMPLES_USER = 50; % 1--50
+        % ####################### Stride ###################################
+        % recommended to change all vars at once
+        WINDOW_STEP = 30; % To obtain the frames
+        WINDOW_STEP_RECOG = 30; % 15 30
+        WINDOW_STEP_LSTM = 30; % 15 30
+        % #################################################################
+        % #################################################################
+
+
+        % Spectrogram
+        FRECUENCIES = (0:12);
+        WINDOW = 24;
+        OVERLAPPING = floor(Shared.WINDOW * 0.5);
+
+        % Frame
+        FRAME_WINDOW = 300;
+        % if frame > TOLERANCE_WINDOW || frame > TOLERNCE_GESTURE -> gesture
+        TOLERANCE_WINDOW = 0.75;
+        TOLERNCE_GESTURE = 0.5; % 0.75 0.25;
         
-        %% SIGNAL DATA
-        % The sampling frequency of the signal
-        FS = 1000;
-        % The amount of channels of the signal
-        NUM_CHANNELS = 7;
-        
-        %% SPECTROGRAMS DATA
-        % Length of the windows for the spectrograms
-        WINDOW_LENGTH = 124;
-        % Overlapping factor of the windows for spectrograms
-        OVERLAP_LENGTH = 100;
-        % The number of samples for the fast fourier transform
-        FFT_SAMPLES = 124;
-        
-        %% FRAME DATA
-        % Size of the frame(points) that will be classify
-        FRAME_WINDOW = 250;
-        % Number of hidden units for the LSTM
-        NUM_HIDDEN_UNITS = 126;
-        
-        %% SLIDING WINDOW DATA (CNN)
-        % Step of the window for recognition (points)
-        WINDOW_STEP_RECOG = 10;
-        
-        %% SLIDING WINDOW DATA (LSTM)
-        % Step of the window for LSTM (points)
-        WINDOW_STEP_LSTM = 10;
-        % Time that takes create a spectrogram and classify it
-        % AVG_PROC_TIME_FRAME = 0.0035;%0.0031
-        
-        %% CLASSIFICATION DATA
-        % Threshold to consider that a gesture is happening
-        FRAME_CLASS_THRESHOLD = 0.8;
-                
-        %% EVALUATION DATA
-        % Filling used during evaluation (before | none)
-        FILLING_TYPE_EVAL = 'before';
-        
+        % Recognition
+        FRAME_CLASS_THRESHOLD = 0.5; % 0.75 0.25;
+        % if labels > MIN_LABELS_SEQUENCE -> true
+        MIN_LABELS_SEQUENCE = 4;
+        FILLING_TYPE = 'before'; % 'before' 'none'
+        POSTPROCESS = '1-1'; % '1-1' '1-2' '2-1'
+
+        % Evaluation
+        FILLING_TYPE_EVAL = 'none'; % 'before' 'none'
+
+        % For LSTM
+        FILLING_TYPE_LSTM = 'before'; % 'before' 'none'
+        NOGESTURE_FILL = 'some' % 'some' 'all'
+        NOGESTURE_IN_SEQUENCE = 3; % if 'some'
+        PAD_KIND = 'shortest'; % 'shortest' 'longest'
+        TOLERNCE_GESTURE_LSTM = 0.5; % 0.75 0.25;
+        NUM_HIDDEN_UNITS = 128; % 128 %58(60) %27(30)
+
+        % Samples and signals
+        numSamplesUser = 150;
+        numGestureRepetitions = 25;
+        numChannels = 8;
+
+        % User distribution
+        includeTesting = false; %false true
+        numTestUsers = 16;
     end
-    
-    
+
     methods(Static)
-        
-        %% DATASET FUNCTIONS
-        % Function to establish if the 'noGesture' class is used
+
+        % GET THE USER LIST
+        function [users, dataPath] = getUsers(dataDir, subDir)
+            dataPath = fullfile(dataDir, subDir);
+            usersList = dir(dataPath);
+            
+            % Filtrar solamentente carpetas de usuarios válidas
+            users = string.empty;
+            for i = 1:length(usersList)
+                if usersList(i).isdir && startsWith(usersList(i).name, 'user')
+                    users(end+1, 1) = string(usersList(i).name);
+                end
+            end
+            
+            rng(9); % seed
+            users = users(randperm(length(users)));
+        end
+
+        % GET TRAINING AND TESTING SAMPLES FOR AN USER (Unified for JSON and MAT)
+        function [trainingSamples, testingSamples] = getTrainingTestingSamples(path, user, format)
+            if nargin < 3, format = 'json'; end % Default to json for backward compatibility
+            
+            if isequal(format, 'json')
+                filePath = fullfile(path, user, strcat(user, '.json'));
+                jsonFile = fileread(filePath);
+                jsonData = jsondecode(jsonFile);
+                trainingSamples = jsonData.trainingSamples;
+                testingSamples = jsonData.testingSamples;
+            elseif isequal(format, 'mat')
+                [trainingSamples, testingSamples] = Shared.readSamplesMAT(path, user);
+            else
+                error('Unknown format: %s', format);
+            end
+        end
+
+        % READ SAMPLES — NEW DATASET (.mat, one file per gesture)
+        function [trainingSamples, validationSamples] = readSamplesMAT(path, user)
+            gestureNames = {'fist', 'open', 'pinch', 'waveIn', 'waveOut', 'relax'};
+            allSamples = struct();
+            idx = 1;
+
+            for g = 1:length(gestureNames)
+                gName = gestureNames{g};
+                matFile = fullfile(path, user, strcat(gName, '.mat'));
+                if ~isfile(matFile), continue; end
+                loaded = load(matFile);
+                repsData = loaded.reps.(gName).data; % cell array of structs
+
+                for r = 1:length(repsData)
+                    s = repsData{r};
+                    emgRaw = s.emg; % already [Nx8] double matrix
+
+                    % Build emg as struct with ch1..ch8
+                    emgStruct = struct();
+                    for ch = 1:size(emgRaw, 2)
+                        emgStruct.(sprintf('ch%d', ch)) = emgRaw(:, ch);
+                    end
+                    sigLen = size(emgRaw, 1);
+
+                    % Build groundTruth from pointGestureBegins
+                    if isequal(gName, 'relax') || isempty(s.pointGestureBegins)
+                        gt = zeros(sigLen, 1);
+                        gtIdx = [1, sigLen];
+                        assignedName = 'noGesture';
+                    else
+                        startPt = s.pointGestureBegins;
+                        gt = zeros(sigLen, 1);
+                        gt(startPt:end) = 1;
+                        gtIdx = [startPt, sigLen];
+                        assignedName = gName;
+                    end
+
+                    key = sprintf('idx_%d', idx);
+                    allSamples.(key).emg              = emgStruct;
+                    allSamples.(key).gestureName      = assignedName;
+                    allSamples.(key).groundTruth      = gt;
+                    allSamples.(key).groundTruthIndex = gtIdx;
+                    idx = idx + 1;
+                end
+            end
+
+            % Split 80/20 training / validation
+            keys = fieldnames(allSamples);
+            n = length(keys);
+            rng(9);
+            perm = randperm(n);
+            splitIdx = floor(0.8 * n);
+
+            trainingSamples   = struct();
+            validationSamples = struct();
+            for k = 1:splitIdx
+                trainingSamples.(keys{perm(k)}) = allSamples.(keys{perm(k)});
+            end
+            for k = splitIdx+1:n
+                validationSamples.(keys{perm(k)}) = allSamples.(keys{perm(k)});
+            end
+        end
+
+        % FUNCTION TO READ A FILE
+        function data = readFile(filename)
+            % Load a Matlab file
+            data = load(filename).data;
+        end
+
+        % FUNCTION TO GET THE EMG SIGNAL
+        function signal = getSignal(emg)
+            % Get chanels
+            channels = fieldnames(emg);
+            % Signal dimensions (1000 x 8 aprox)
+            signal = zeros(length(emg.(channels{1})), length(channels));
+            for j = 1:length(channels)
+                signal(:,j) = emg.(channels{j});
+            end
+        end
+
+        % FUNCTION TO RECTIFY EMG
+        function rectifiedEMG = rectifyEMG(rawEMG, rectFcn)
+            switch rectFcn
+                case 'square'
+                    rectifiedEMG = rawEMG.^2;
+                case 'abs'
+                    rectifiedEMG = abs(rawEMG);
+                case 'none'
+                    rectifiedEMG = rawEMG;
+                otherwise
+                    fprintf('Wrong rectification function. Valid options are square, abs and none');
+            end
+        end
+
+        % FUNCTION TO APLY A FILTER TO EMG
+        function EMGsegment_out = preProcessEMGSegment(EMGsegment_in, Fa, Fb, rectFcn)
+            % Normalization
+            if max( abs(EMGsegment_in(:)) ) > 1
+                drawnow;
+                EMGnormalized = EMGsegment_in/128;
+            else
+                EMGnormalized = EMGsegment_in;
+            end
+            EMGrectified = Shared.rectifyEMG(EMGnormalized, rectFcn);
+            EMGsegment_out = filtfilt(Fb, Fa, EMGrectified);
+        end
+
+        % FUNCTION TO PREPROCESS A SIGNAL
+        function signal = preprocessSignal(signal)
+            [Fb, Fa] = butter(5, 0.1, 'low');
+            signal = Shared.preProcessEMGSegment(signal, Fa, Fb, 'abs');
+        end
+
+        % FUNCTION TO GENERATE SPECTROGRAMS
+        function spectrograms = generateSpectrograms(signal)
+            % Spectrogram parameters
+            sampleFrecuency = 200;
+            % Preallocate space for the spectrograms
+            numCols = floor((length(signal) - Shared.OVERLAPPING) / ...
+                (Shared.WINDOW - Shared.OVERLAPPING));
+            spectrograms = zeros(length(Shared.FRECUENCIES), numCols, Shared.numChannels);
+            % Spectrograms generation
+            for i = 1:size(signal, 2)
+                [s,~,~,~] = spectrogram(signal(:,i), Shared.WINDOW, Shared.OVERLAPPING, ...
+                    Shared.FRECUENCIES, sampleFrecuency, 'yaxis'); % [~,~,~,ps]
+                spectrograms(:,:,i) = abs(s).^2; % ps;
+            end
+        end
+
+        % FUNCTION TO SHUFFLE SAMPLES IN A FILE DATASTORE
+        function [fds, idx] = shuffle(fds)
+            % Get the number of files
+            numObservations = numel(fds.Files);
+            % Shuffle files and their corresponding labels
+            rng(9); % seed
+            idx = randperm(numObservations);
+            fds.Files = fds.Files(idx);
+        end
+
+        % FUCNTION TO SET THE USE OF NOGESTURE
         function classes = setNoGestureUse(withNoGesture)
             if withNoGesture
-                classes = {'noGesture','thumbFlexion','indexFlexion', ... 
-                    'middleFlexion','ringFlexion','littleFlexion'};
+                classes = ["fist", "noGesture", "open", "pinch", "waveIn", "waveOut"];
             else
-                classes = {'thumbFlexion','indexFlexion','middleFlexion', ... 
-                    'ringFlexion','littleFlexion'};
+                classes = ["fist", "open", "pinch", "waveIn", "waveOut"];
             end
         end
-        
-        % Check if testing is included
-        function result = includeTesting()
-            result = true;
+
+        % FUNCTION TO CREATE LABELS
+        function [labels, numObservations] = createLabels(files, withNoGesture)
+            % Get the number of files
+            numObservations = numel(files);
+            % Allocate spacce for labels
+            labels = cell(numObservations,1);
+            parfor i = 1:numObservations
+                file = files{i};
+                filepath = fileparts(file); % ../datastore/class
+                % The last part of the path is the label
+                [~,label] = fileparts(filepath); % [../datastore, class]
+                labels{i,1} = label;
+            end
+            classes = Shared.setNoGestureUse(withNoGesture);
+            labels = categorical(labels, classes);
         end
-        
-        % The number of users for testing
-        function numTestUsers = numTestUsers()
-            numTestUsers = 13;
-        end
-        
-        % The amount of samples per user
-        function numSamplesUser = numSamplesUser()
-            numSamplesUser = 50;
-        end
-        
-        % Function to extract the users directories from a folder
-        function [users, trainingPath] = getUsers(dataDir, trainingDir)
-            trainingPath = fullfile(dataDir, trainingDir);
-            users = dir(trainingPath);
-            users = users(~ismember({users.name}, {'.', '..'}) & [users.isdir]);
-            users = {users.name}';
-        end
-        
-        % Function to extract the training and testing samples from a user
-        function [trainingSamples, testingSamples] = getTrainingTestingSamples(trainingPath, user)
-            
-            % Set path to user directory
-            userPath = fullfile(trainingPath, user);
-            
-            % Check if the datset is in JSON or MAT (unified support)
-            jsonFiles = dir(fullfile(userPath, '*.json'));
-            
-            if ~isempty(jsonFiles)
-                % JSON FORMAT (Original)
-                % Set path to json file
-                filePath = fullfile(userPath, [char(user), '.json']);
-                jsonFile = fileread(filePath);
-                data = jsondecode(jsonFile);
-                
-                % Get testing and training samples
-                testingSamples = data.testingSamples;
-                trainingSamples = data.trainingSamples;
+
+        % FUNCTION TO CLASSIFY PREDICTIONS
+        function class = classifyPredictions(yPred)
+            categories = Shared.setNoGestureUse(true); % Provemos a quitar el categorical
+
+            % Delete noGestures
+            idxs = cellfun(@(label) ~isequal(label,'noGesture'), yPred);
+            yPred = categorical(yPred(idxs),Shared.setNoGestureUse(true));
+
+            % Count the number of labels per gesture
+            catCounts = countcats(yPred);
+            [catCounts,indexes] = sort(catCounts,'descend');
+            newCategories = categories(indexes);
+
+            % Set the class if labels are over the theashold
+            if catCounts(1) >= Shared.MIN_LABELS_SEQUENCE
+                class = newCategories(1);
             else
-                % MAT FORMAT (New)
-                matFiles = dir(fullfile(userPath, '*.mat'));
-                trainingSamples = struct();
-                testingSamples = struct();
-                
-                % Conventional split: first 40 for training, last 10 for testing
-                for i = 1:length(matFiles)
-                    fileName = matFiles(i).name;
-                    filePath = fullfile(userPath, fileName);
-                    
-                    % Load mat file
-                    sampleData = load(filePath);
-                    
-                    % Determine key
-                    cleanName = strrep(fileName, '.mat', '');
-                    cleanName = strrep(cleanName, '-', '_');
-                    
-                    if i <= 40
-                        trainingSamples.(cleanName) = sampleData;
-                    else
-                        testingSamples.(cleanName) = sampleData;
+                class = categorical({'noGesture'}, Shared.setNoGestureUse(true));
+            end
+        end
+
+        % FUNCTION TO POST PROCESS THE SAMPLE
+        function labels = postprocessSample(labels, class)
+            if Shared.doPostprocessing
+                if ismember(Shared.POSTPROCESS, {'1-1', '2-1', '1-2'})
+
+                    % Check the first label
+                    right = isequal(labels{1,1}, 'noGesture');
+                    if isequal(Shared.POSTPROCESS, '1-2')
+                        right = isequal(labels{1,2}, class) || isequal(labels{1,3}, 'noGesture');
+                    end
+                    current = isequal(labels{1,1}, class);
+                    if right && current
+                        labels{1,1} = 'noGesture';
+                    end
+
+                    % Set start and finish for middle labels
+                    start = 2; finish = length(labels) - 1; % 1-1 by default
+                    if isequal(Shared.POSTPROCESS, '2-1')
+                        start = 3;
+                    elseif isequal(Shared.POSTPROCESS, '1-2')
+                        finish = length(labels) - 2;
+                    end
+
+                    % Check for misclassified labels
+                    for i = start:finish
+
+                        % Check left-current-right classes
+                        left = isequal(labels{1,i-1}, class);
+                        right = isequal(labels{1,i+1}, class);
+                        if isequal(Shared.POSTPROCESS, '2-1')
+                            left = isequal(labels{1,i-1}, class) || isequal(labels{1,i-2}, class);
+                        elseif isequal(Shared.POSTPROCESS, '1-2')
+                            right = isequal(labels{1,i+1}, class) || isequal(labels{1,i+2}, class);
+                        end
+                        current = ~isequal(labels{1,i}, class);
+
+                        % Replace the class if matches the criterium
+                        if left && right && current
+                            labels{1,i} = class;
+                        end
+
+                        % Replace the class if matches the criterium
+                        if ~left && ~right && ~current
+                            labels{1,i} = 'noGesture';
+                        end
+
+                    end
+
+                    % Check the last label
+                    left = isequal(labels{1,length(labels) - 1}, 'noGesture');
+                    if isequal(Shared.POSTPROCESS, '2-1')
+                        left = isequal(labels{1, length(labels) - 1}, 'noGesture') || ...
+                            isequal(labels{1, length(labels) - 2}, 'noGesture');
+                    end
+                    current = isequal(labels{1,length(labels)}, class);
+
+                    % Replace the class if matches the criterium
+                    if left && current
+                        labels{1,i} = 'noGesture';
+                    end
+
+
+
+                    % Set wrong labels to noGestute
+                    for i = 1:length(labels)
+                        if ~isequal(labels{1,i}, class)
+                            labels{1,i} = 'noGesture';
+                        end
                     end
                 end
             end
-        end
-        
-        
-        %% SIGNAL FUNCTIONS
-        % Function to extract the signal from a sample data
-        function signal = getSignal(sample)
-            % Extract the data for the 7 channels
-            c1 = sample.c1; c2 = sample.c2; c3 = sample.c3;
-            c4 = sample.c4; c5 = sample.c5; c6 = sample.c6;
-            c7 = sample.c7;
-            % Set the data into a single matrix
-            signal = [c1, c2, c3, c4, c5, c6, c7];
-        end
-        
-        % Function to preprocess the signal
-        function preprocessedSignal = preprocessSignal(signal)
-            % 1. Rectification of the signal
-            preprocessedSignal = abs(signal);
-            % 2. Normalization of the signal
-            %preprocessedSignal = preprocessedSignal ./ max(preprocessedSignal(:));
-        end
-        
-        
-        %% SPECTROGRAM FUNCTIONS
-        % Function to generate 7 spectrograms from a signal
-        function spectrograms = generateSpectrograms(signal)
-            
-            % Calculate size of the spectrogram
-            % [1+fft/2, 1+floor((points-window)/step)]
-            % numFrequencyBins = 1 + Shared.FFT_SAMPLES / 2;
-            % numTimeBins = 1 + floor((Shared.FRAME_WINDOW - Shared.WINDOW_LENGTH) / ... 
-            %    (Shared.WINDOW_LENGTH - Shared.OVERLAP_LENGTH));
-            
-            % Preallocate space for the spectrograms
-            spectrograms = zeros(63, 6, 7);
-            
-            % For each channel
-            for i = 1:Shared.NUM_CHANNELS
-                % Extract signal of a channel
-                signalChannel = signal(:, i);
-                % Generate spectrogram
-                [~, ~, ~, s] = spectrogram(signalChannel, Shared.WINDOW_LENGTH, ... 
-                    Shared.OVERLAP_LENGTH, Shared.FFT_SAMPLES, Shared.FS);
-                % Adjust to 63x6 (Standard size in this project)
-                spectrograms(:, :, i) = abs(s(1:63, :));
-            end
-        end
-        
-        
-        %% CLASSIFICATION FUNCTIONS
-        % Function to classify a series of predicted labels (Voting)
-        function classificationResult = classifyPredictions(labels)
-            
-            % Convert to categorical
+            % Transform to categorical
             labels = categorical(labels, Shared.setNoGestureUse(true));
-            
-            % Find the elements that are not 'noGesture'
-            gestureLabels = labels(labels ~= 'noGesture');
-            
-            if isempty(gestureLabels)
-                classificationResult = 'noGesture';
-            else
-                % Count occurrences
-                counts = countcats(gestureLabels);
-                [maxCount, idx] = max(counts);
-                
-                % Check if there is a clear winner
-                if maxCount > (length(labels) * 0.2) % Empirical threshold
-                     classes = categories(gestureLabels);
-                     classificationResult = classes{idx};
-                else
-                    classificationResult = 'noGesture';
-                end
-            end
         end
-        
-        % Function to postprocess sample labels
-        function postprocessedLabels = postprocessSample(labels, class)
-             % If the sample was classified as noGesture, all frames are noGesture
-            if isequal(class, 'noGesture')
-                postprocessedLabels = repmat({'noGesture'}, 1, length(labels));
-            else
-                postprocessedLabels = labels;
-                % Minimal smoothing: if a frame is surrounded by 'class', it belongs to 'class'
-                for i = 2:length(labels)-1
-                    if isequal(labels{i-1}, class) && isequal(labels{i+1}, class)
-                        postprocessedLabels{i} = class;
-                    end
-                end
-            end
-        end
-        
+
     end
-    
+
 end

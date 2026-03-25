@@ -94,12 +94,8 @@ for i = 1:size(usersSets, 1)
         s = sprintf('Usuario: %d / %d\n', j, length(users));
         fprintf('%s', s)
 
-        % Read samples using the appropriate format
-        if isequal(DATASET_FORMAT, 'mat')
-            [trainingSamples, validationSamples] = readSamplesMAT(trainingPath, users(j));
-        else
-            [trainingSamples, validationSamples] = readSamplesJSON(trainingPath, users(j));
-        end
+        % Read samples using the unified logic in Shared.m
+        [trainingSamples, validationSamples] = Shared.getTrainingTestingSamples(trainingPath, users(j), DATASET_FORMAT);
 
         transformedSamplesTraining   = generateData(trainingSamples);
         transformedSamplesValidation = generateData(validationSamples);
@@ -185,11 +181,9 @@ for i = 1:size(usersSets, 1)
     end
 
     parfor j = 1:length(users)
-        if isequal(DATASET_FORMAT, 'mat')
-            [trainingSamples, validationSamples] = readSamplesMAT(trainingPath, users(j));
-        else
-            [trainingSamples, validationSamples] = readSamplesJSON(trainingPath, users(j));
-        end
+        % Read samples using the unified logic in Shared.m
+        [trainingSamples, validationSamples] = Shared.getTrainingTestingSamples(trainingPath, users(j), DATASET_FORMAT);
+        
         tTrain = generateDataNoGesture(trainingSamples, sz1);
         tVal   = generateDataNoGesture(validationSamples, sz2);
         saveSampleInDatastore(tTrain, users(j), 'validation', ds1);
@@ -199,85 +193,6 @@ end
 clear i j ds1 ds2 sz1 sz2 noGestureTesting noGestureTraining noGestureValidation
 clear testingDatastore trainingDatastore trainingPath users usersSet validationDatastore
 clear transformedSamplesValidation validationSamples noGestureFramesPerSample usersSets
-
-
-%% =========================================================================
-%%  READER FUNCTIONS
-%% =========================================================================
-
-%% READ SAMPLES — NEW DATASET (.mat, one file per gesture)
-% Structure: trainingJSON/userX/fist.mat -> reps.fist.data{i} -> emg (1000x8), pointGestureBegins
-function [trainingSamples, validationSamples] = readSamplesMAT(path, user)
-    gestureNames = {'fist', 'open', 'pinch', 'waveIn', 'waveOut', 'relax'};
-    allSamples = struct();
-    idx = 1;
-
-    for g = 1:length(gestureNames)
-        gName = gestureNames{g};
-        matFile = fullfile(path, user, strcat(gName, '.mat'));
-        if ~isfile(matFile), continue; end
-        loaded = load(matFile);
-        repsData = loaded.reps.(gName).data; % cell array of structs
-
-        for r = 1:length(repsData)
-            s = repsData{r};
-            emgRaw = s.emg; % already [Nx8] double matrix
-
-            % Build emg as struct with ch1..ch8 (compatible with Shared.getSignal)
-            emgStruct = struct();
-            for ch = 1:size(emgRaw, 2)
-                emgStruct.(sprintf('ch%d', ch)) = emgRaw(:, ch);
-            end
-            sigLen = size(emgRaw, 1);
-
-            % Build groundTruth from pointGestureBegins
-            if isequal(gName, 'relax') || isempty(s.pointGestureBegins)
-                gt = zeros(sigLen, 1);
-                gtIdx = [1, sigLen];
-                assignedName = 'noGesture';
-            else
-                startPt = s.pointGestureBegins;
-                gt = zeros(sigLen, 1);
-                gt(startPt:end) = 1;
-                gtIdx = [startPt, sigLen];
-                assignedName = gName;
-            end
-
-            key = sprintf('idx_%d', idx);
-            allSamples.(key).emg              = emgStruct;
-            allSamples.(key).gestureName      = assignedName;
-            allSamples.(key).groundTruth      = gt;
-            allSamples.(key).groundTruthIndex = gtIdx;
-            idx = idx + 1;
-        end
-    end
-
-    % Split 80/20 training / validation (same seed as Shared)
-    keys = fieldnames(allSamples);
-    n = length(keys);
-    rng(9);
-    perm = randperm(n);
-    splitIdx = floor(0.8 * n);
-
-    trainingSamples   = struct();
-    validationSamples = struct();
-    for k = 1:splitIdx
-        trainingSamples.(keys{perm(k)}) = allSamples.(keys{perm(k)});
-    end
-    for k = splitIdx+1:n
-        validationSamples.(keys{perm(k)}) = allSamples.(keys{perm(k)});
-    end
-end
-
-%% READ SAMPLES — ORIGINAL DATASET (.json, one file per user)
-% Structure: trainingJSON1/userX/userX.json -> trainingSamples / testingSamples
-function [trainingSamples, testingSamples] = readSamplesJSON(path, user)
-    filePath = fullfile(path, user, strcat(user, '.json'));
-    jsonFile = fileread(filePath);
-    jsonData = jsondecode(jsonFile);
-    trainingSamples = jsonData.trainingSamples;
-    testingSamples  = jsonData.testingSamples;
-end
 
 
 %% =========================================================================
